@@ -1,1 +1,6 @@
 user-data.yaml
+*.qcow2
+*.iso
+*.log
+.vm_*
+CLAUDE.md
