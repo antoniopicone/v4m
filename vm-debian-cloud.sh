@@ -234,6 +234,15 @@ configure_ssh_key() {
     done
 }
 
+# Check QEMU availability
+check_qemu() {
+    if ! command -v qemu-system-aarch64 >/dev/null 2>&1; then
+        log_error "QEMU not found. Please install QEMU:"
+        log_error "  brew install qemu"
+        exit 1
+    fi
+}
+
 # Download cloud image if needed
 download_cloud_image() {
     if [ ! -f "$CLOUD_IMAGE" ]; then
@@ -562,6 +571,7 @@ main() {
     case "${1:-help}" in
         "setup")
             log_info "Setting up Debian VM with cloud-init"
+            check_qemu
             download_cloud_image
             create_vm_disk
             create_efi_vars
@@ -573,6 +583,7 @@ main() {
             log_info "Now run: $0 start"
             ;;
         "start")
+            check_qemu
             start_vm
             ;;
         "status")
