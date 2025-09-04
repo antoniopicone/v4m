@@ -4,3 +4,4 @@ user-data.yaml
 *.log
 .vm_*
 CLAUDE.md
+node_modules

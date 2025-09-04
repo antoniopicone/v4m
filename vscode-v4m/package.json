@@ -1,0 +1,164 @@
+{
+  "name": "v4m-vm-manager",
+  "displayName": "v4m VM Manager",
+  "description": "Manage v4m Virtual Machines from VS Code",
+  "version": "0.1.0",
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "v4m-sidebar",
+          "title": "v4m VM Manager",
+          "icon": "$(vm)"
+        }
+      ]
+    },
+    "views": {
+      "v4m-sidebar": [
+        {
+          "id": "v4mExplorer",
+          "name": "Virtual Machines",
+          "when": "true"
+        },
+        {
+          "id": "v4mImages",
+          "name": "Images",
+          "when": "true"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "v4m.refreshVMs",
+        "title": "Refresh",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "v4m.createVM",
+        "title": "Create VM",
+        "icon": "$(add)"
+      },
+      {
+        "command": "v4m.init",
+        "title": "Initialize v4m",
+        "icon": "$(settings-gear)"
+      },
+      {
+        "command": "v4m.checkStatus",
+        "title": "Check Status",
+        "icon": "$(pulse)"
+      },
+      {
+        "command": "v4m.pullImage",
+        "title": "Pull Image",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "v4m.startVM",
+        "title": "Start",
+        "icon": "$(play)"
+      },
+      {
+        "command": "v4m.stopVM",
+        "title": "Stop",
+        "icon": "$(stop)"
+      },
+      {
+        "command": "v4m.deleteVM",
+        "title": "Delete",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "v4m.connectConsole",
+        "title": "Connect to Console",
+        "icon": "$(terminal)"
+      },
+      {
+        "command": "v4m.openSSH",
+        "title": "SSH Connection",
+        "icon": "$(remote-explorer)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "v4m.refreshVMs",
+          "when": "view == v4mExplorer",
+          "group": "navigation"
+        },
+        {
+          "command": "v4m.createVM",
+          "when": "view == v4mExplorer",
+          "group": "navigation"
+        },
+        {
+          "command": "v4m.init",
+          "when": "view == v4mExplorer",
+          "group": "navigation"
+        },
+        {
+          "command": "v4m.checkStatus",
+          "when": "view == v4mExplorer",
+          "group": "navigation"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "v4m.refreshImages",
+          "when": "view == v4mImages",
+          "group": "navigation"
+        },
+        {
+          "command": "v4m.pullImage",
+          "when": "view == v4mImages",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "v4m.startVM",
+          "when": "view == v4mExplorer && viewItem == vm-stopped",
+          "group": "inline"
+        },
+        {
+          "command": "v4m.stopVM",
+          "when": "view == v4mExplorer && viewItem == vm-running",
+          "group": "inline"
+        },
+        {
+          "command": "v4m.connectConsole",
+          "when": "view == v4mExplorer && viewItem =~ /vm-(running|stopped)/",
+          "group": "connection"
+        },
+        {
+          "command": "v4m.openSSH",
+          "when": "view == v4mExplorer && viewItem == vm-running",
+          "group": "connection"
+        },
+        {
+          "command": "v4m.deleteVM",
+          "when": "view == v4mExplorer && viewItem =~ /vm-(running|stopped)/",
+          "group": "management"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.74.0",
+    "@types/node": "16.x",
+    "typescript": "^4.9.4"
+  }
+}
