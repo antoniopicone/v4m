@@ -85,41 +85,64 @@
         "command": "v4m.openSSH",
         "title": "SSH Connection",
         "icon": "$(remote-explorer)"
+      },
+      {
+        "command": "v4m.refreshImages",
+        "title": "Refresh Images",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "v4m.refreshAll",
+        "title": "Refresh All",
+        "icon": "$(sync)"
+      },
+      {
+        "command": "v4m.deleteImage",
+        "title": "Delete Image",
+        "icon": "$(trash)"
       }
     ],
     "menus": {
       "view/title": [
         {
+          "command": "v4m.refreshAll",
+          "when": "view == v4mExplorer",
+          "group": "navigation@0"
+        },
+        {
           "command": "v4m.refreshVMs",
           "when": "view == v4mExplorer",
-          "group": "navigation"
+          "group": "navigation@1"
         },
         {
           "command": "v4m.createVM",
           "when": "view == v4mExplorer",
-          "group": "navigation"
+          "group": "navigation@2"
         },
         {
           "command": "v4m.init",
           "when": "view == v4mExplorer",
-          "group": "navigation"
+          "group": "navigation@3"
         },
         {
           "command": "v4m.checkStatus",
           "when": "view == v4mExplorer",
-          "group": "navigation"
-        }
-      ],
-      "view/title": [
+          "group": "navigation@4"
+        },
+        {
+          "command": "v4m.refreshAll",
+          "when": "view == v4mImages",
+          "group": "navigation@0"
+        },
         {
           "command": "v4m.refreshImages",
           "when": "view == v4mImages",
-          "group": "navigation"
+          "group": "navigation@1"
         },
         {
           "command": "v4m.pullImage",
           "when": "view == v4mImages",
-          "group": "navigation"
+          "group": "navigation@2"
         }
       ],
       "view/item/context": [
@@ -146,6 +169,11 @@
         {
           "command": "v4m.deleteVM",
           "when": "view == v4mExplorer && viewItem =~ /vm-(running|stopped)/",
+          "group": "management"
+        },
+        {
+          "command": "v4m.deleteImage",
+          "when": "view == v4mImages && viewItem == image",
           "group": "management"
         }
       ]

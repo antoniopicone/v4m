@@ -1,0 +1,40 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:v4m}",
+            "name": "Debug v4m-vm",
+            "program": "${workspaceFolder:v4m}/.build/debug/v4m-vm",
+            "preLaunchTask": "swift: Build Debug v4m-vm"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:v4m}",
+            "name": "Release v4m-vm",
+            "program": "${workspaceFolder:v4m}/.build/release/v4m-vm",
+            "preLaunchTask": "swift: Build Release v4m-vm"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:v4m}",
+            "name": "Debug v4m",
+            "program": "${workspaceFolder:v4m}/.build/debug/v4m",
+            "preLaunchTask": "swift: Build Debug v4m"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:v4m}",
+            "name": "Release v4m",
+            "program": "${workspaceFolder:v4m}/.build/release/v4m",
+            "preLaunchTask": "swift: Build Release v4m"
+        }
+    ]
+}

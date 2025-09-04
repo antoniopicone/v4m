@@ -11,8 +11,17 @@ function activate(context) {
     // Register tree data providers
     vscode.window.registerTreeDataProvider('v4mExplorer', vmProvider);
     vscode.window.registerTreeDataProvider('v4mImages', imageProvider);
+    // Setup auto-refresh every 30 seconds
+    const autoRefreshInterval = setInterval(() => {
+        vmProvider.refresh();
+        imageProvider.refresh();
+    }, 30000);
+    context.subscriptions.push({ dispose: () => clearInterval(autoRefreshInterval) });
     // Register VM commands
-    context.subscriptions.push(vscode.commands.registerCommand('v4m.refreshVMs', () => vmProvider.refresh()), vscode.commands.registerCommand('v4m.refreshImages', () => imageProvider.refresh()), vscode.commands.registerCommand('v4m.init', () => runV4MInit()), vscode.commands.registerCommand('v4m.checkStatus', () => checkV4MStatus()), vscode.commands.registerCommand('v4m.createVM', () => createVM(vmProvider)), vscode.commands.registerCommand('v4m.startVM', (vm) => startVM(vm, vmProvider)), vscode.commands.registerCommand('v4m.stopVM', (vm) => stopVM(vm, vmProvider)), vscode.commands.registerCommand('v4m.deleteVM', (vm) => deleteVM(vm, vmProvider)), vscode.commands.registerCommand('v4m.connectConsole', (vm) => connectConsole(vm)), vscode.commands.registerCommand('v4m.openSSH', (vm) => openSSH(vm)), vscode.commands.registerCommand('v4m.pullImage', () => pullImage(imageProvider)));
+    context.subscriptions.push(vscode.commands.registerCommand('v4m.refreshVMs', () => vmProvider.refresh()), vscode.commands.registerCommand('v4m.refreshImages', () => imageProvider.refresh()), vscode.commands.registerCommand('v4m.refreshAll', () => {
+        vmProvider.refresh();
+        imageProvider.refresh();
+    }), vscode.commands.registerCommand('v4m.init', () => runV4MInit()), vscode.commands.registerCommand('v4m.checkStatus', () => checkV4MStatus()), vscode.commands.registerCommand('v4m.createVM', () => createVM(vmProvider, imageProvider)), vscode.commands.registerCommand('v4m.startVM', (vm) => startVM(vm, vmProvider)), vscode.commands.registerCommand('v4m.stopVM', (vm) => stopVM(vm, vmProvider)), vscode.commands.registerCommand('v4m.deleteVM', (vm) => deleteVM(vm, vmProvider)), vscode.commands.registerCommand('v4m.connectConsole', (vm) => connectConsole(vm)), vscode.commands.registerCommand('v4m.openSSH', (vm) => openSSH(vm)), vscode.commands.registerCommand('v4m.pullImage', () => pullImage(imageProvider)), vscode.commands.registerCommand('v4m.deleteImage', (image) => deleteImage(image, imageProvider)));
 }
 exports.activate = activate;
 class VMProvider {
@@ -171,17 +180,22 @@ async function checkV4MStatus() {
         vscode.window.showErrorMessage('Failed to check v4m status');
     }
 }
-async function createVM(provider) {
+async function createVM(vmProvider, imageProvider) {
     const name = await vscode.window.showInputBox({
         prompt: 'Enter VM name (optional)',
         placeHolder: 'Leave empty for random name'
     });
-    const image = await vscode.window.showQuickPick([
+    // Get available images dynamically
+    const images = await imageProvider.getImages();
+    const imageChoices = images.map(img => img.imageInfo.name);
+    // Fallback to hardcoded images if none found
+    const availableImages = imageChoices.length > 0 ? imageChoices : [
         'debian12',
         'debian13',
         'ubuntu22',
         'ubuntu24'
-    ], {
+    ];
+    const image = await vscode.window.showQuickPick(availableImages, {
         placeHolder: 'Select image'
     });
     if (!image) {
@@ -203,7 +217,7 @@ async function createVM(provider) {
     terminal.sendText(command);
     terminal.show();
     // Refresh VMs after a delay
-    setTimeout(() => provider.refresh(), 3000);
+    setTimeout(() => vmProvider.refresh(), 3000);
 }
 async function startVM(vm, provider) {
     const terminal = vscode.window.createTerminal(`v4m Start ${vm.vmInfo.name}`);
@@ -267,6 +281,25 @@ async function pullImage(provider) {
     terminal.sendText(`v4m image pull "${image}"`);
     terminal.show();
     setTimeout(() => provider.refresh(), 5000);
+}
+async function deleteImage(image, provider) {
+    const result = await vscode.window.showWarningMessage(`Are you sure you want to delete image '${image.imageInfo.name}'?`, { modal: true }, 'Delete', 'Cancel');
+    if (result === 'Delete') {
+        try {
+            vscode.window.showInformationMessage(`Deleting image '${image.imageInfo.name}'...`);
+            const { stdout, stderr } = await execAsync(`/Users/antonio/Developer/antoniopicone/vm_tests/v4m/v4m image delete "${image.imageInfo.name}"`);
+            if (stderr) {
+                vscode.window.showErrorMessage(`Error deleting image: ${stderr}`);
+            }
+            else {
+                vscode.window.showInformationMessage(`Image '${image.imageInfo.name}' deleted successfully`);
+            }
+            provider.refresh();
+        }
+        catch (error) {
+            vscode.window.showErrorMessage(`Failed to delete image: ${error}`);
+        }
+    }
 }
 function deactivate() { }
 exports.deactivate = deactivate;
