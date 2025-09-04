@@ -32,13 +32,13 @@ show_spinner() {
     local spin='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
     local spin_length=${#spin}
     
-    tput civis
+    tput civis >&2
     for i in $(seq 1 $duration); do
         local spinner_char=$((i % spin_length))
-        printf "\r${BLUE}${spin:$spinner_char:1}${NC} $message "
+        printf "\r${BLUE}${spin:$spinner_char:1}${NC} $message " >&2
         sleep 0.033
     done
-    tput cnorm
+    tput cnorm >&2
 }
 
 log_info() {
@@ -112,6 +112,147 @@ hash_password() {
     openssl passwd -6 "$password"
 }
 
+# Socket VMNet Management
+socket_vmnet_status() {
+    # Get homebrew prefix dynamically
+    local brew_prefix
+    if command -v brew >/dev/null 2>&1; then
+        brew_prefix=$(brew --prefix)
+    else
+        brew_prefix="/opt/homebrew"  # fallback
+    fi
+    
+    local socket_path="$brew_prefix/var/run/socket_vmnet"
+    
+    # Check if socket_vmnet process is running
+    if pgrep -f socket_vmnet >/dev/null 2>&1; then
+        # Also verify the socket file exists and is accessible
+        if [ -S "$socket_path" ]; then
+            return 0
+        else
+            log_warning "socket_vmnet process running but socket not accessible at $socket_path"
+            return 1
+        fi
+    fi
+    
+    return 1
+}
+
+socket_vmnet_start() {
+    if ! socket_vmnet_status; then
+        log_info "Starting socket_vmnet daemon (requires sudo for initial setup)..."
+        
+        # Get homebrew prefix
+        local brew_prefix
+        if command -v brew >/dev/null 2>&1; then
+            brew_prefix=$(brew --prefix)
+        else
+            brew_prefix="/opt/homebrew"
+        fi
+        
+        # Ensure the run directory exists with correct permissions
+        local run_dir="$brew_prefix/var/run"
+        if [ ! -d "$run_dir" ]; then
+            sudo mkdir -p "$run_dir"
+            sudo chown "$(whoami):$(id -gn)" "$run_dir"
+            sudo chmod 755 "$run_dir"
+        fi
+        
+        if sudo brew services start socket_vmnet; then
+            log_success "socket_vmnet daemon started"
+            sleep 3  # Give it more time to start and create socket
+            
+            # Verify socket was created
+            local socket_path="$brew_prefix/var/run/socket_vmnet"
+            if [ ! -S "$socket_path" ]; then
+                log_warning "Socket not created after startup, waiting longer..."
+                sleep 2
+                if [ ! -S "$socket_path" ]; then
+                    log_error "socket_vmnet daemon started but socket not available at $socket_path"
+                    exit 1
+                fi
+            fi
+        else
+            log_error "Failed to start socket_vmnet daemon"
+            exit 1
+        fi
+    fi
+}
+
+socket_vmnet_init() {
+    if ! socket_vmnet_status; then
+        log_warning "socket_vmnet daemon not running"
+        log_info "This is required for bridged networking without sudo on each VM start"
+        printf "Start socket_vmnet daemon? (requires sudo once) (y/N): "
+        read -r confirm
+        
+        if [ "$confirm" = "y" ] || [ "$confirm" = "Y" ]; then
+            socket_vmnet_start
+        else
+            log_info "You can start it later with: sudo brew services start socket_vmnet"
+            log_info "Or use: v4m v4m_init"
+            exit 1
+        fi
+    else
+        log_success "socket_vmnet daemon is running"
+    fi
+}
+
+v4m_init() {
+    log_info "Setting up v4m with all dependencies and DHCP fixes..."
+    echo
+    
+    # Check and install dependencies
+    log_info "Checking dependencies..."
+    
+    # Check QEMU
+    if ! command -v qemu-system-aarch64 >/dev/null 2>&1; then
+        log_warning "QEMU not found"
+        log_info "Installing QEMU..."
+        brew install qemu
+    else
+        log_success "QEMU found"
+    fi
+    
+    # Check socket_vmnet
+    if ! brew list socket_vmnet >/dev/null 2>&1; then
+        log_warning "socket_vmnet not found"
+        log_info "Installing socket_vmnet..."
+        brew install socket_vmnet
+    else
+        log_success "socket_vmnet found"
+    fi
+    
+    # Check socat
+    if ! command -v socat >/dev/null 2>&1; then
+        log_warning "socat not found"
+        log_info "Installing socat..."
+        brew install socat
+    else
+        log_success "socat found"
+    fi
+    
+    echo
+    log_info "Configuring macOS for VM networking (DHCP fixes)..."
+    
+    # Fix macOS firewall blocking DHCP
+    log_info "Configuring macOS firewall to allow bootpd (DHCP server)..."
+    sudo /usr/libexec/ApplicationFirewall/socketfilterfw --add /usr/libexec/bootpd
+    sudo /usr/libexec/ApplicationFirewall/socketfilterfw --unblock /usr/libexec/bootpd
+    
+    # Restart DHCP service
+    log_info "Restarting macOS DHCP service..."
+    sudo /bin/launchctl kickstart -kp system/com.apple.bootpd
+    
+    # Start socket_vmnet
+    log_info "Starting socket_vmnet service..."
+    socket_vmnet_start
+    
+    echo
+    log_success "v4m setup complete!"
+    log_info "You can now create VMs with: v4m vm create"
+}
+
 # VM Commands
 vm_create() {
     local vm_name=""
@@ -143,7 +284,7 @@ vm_create() {
         password=$(generate_password)
     fi
     
-    check_root
+    socket_vmnet_init
     init_dirs
     
     if ! command -v qemu-system-aarch64 >/dev/null 2>&1; then
@@ -158,8 +299,8 @@ get_vm_ip() {
     local vm_name="$1"
     local ip=""
     
-    # Try ping to vm_name.local (mDNS)
-    if ping -c 1 -W 1000 "$vm_name.local" >/dev/null 2>&1; then
+    # Try mDNS resolution first (works with fixed DHCP)
+    if ping -c 1 -W 500 "$vm_name.local" >/dev/null 2>&1; then
         ip=$(ping -c 1 "$vm_name.local" 2>/dev/null | head -1 | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}')
     fi
     
@@ -269,7 +410,7 @@ vm_start() {
         return
     fi
     
-    check_root
+    socket_vmnet_init
     
     local vm_info="$vm_dir/vm-info.json"
     local vm_mac=$(grep '"mac"' "$vm_info" | cut -d'"' -f4)
@@ -344,6 +485,72 @@ vm_delete() {
     log_success "VM '$vm_name' deleted"
 }
 
+vm_ip() {
+    local vm_name="$1"
+    if [ -z "$vm_name" ]; then
+        log_error "VM name required"
+        exit 1
+    fi
+    
+    local vm_dir="$VMS_DIR/$vm_name"
+    if [ ! -d "$vm_dir" ]; then
+        log_error "VM '$vm_name' not found"
+        exit 1
+    fi
+    
+    local pid_file="$vm_dir/vm.pid"
+    if [ ! -f "$pid_file" ] || ! kill -0 "$(cat "$pid_file")" 2>/dev/null; then
+        log_error "VM '$vm_name' is not running"
+        exit 1
+    fi
+    
+    local ip=$(get_vm_ip "$vm_name")
+    if [ -n "$ip" ]; then
+        echo "$ip"
+    else
+        log_error "Could not determine IP for VM '$vm_name'. Try: ssh user@$vm_name.local"
+        exit 1
+    fi
+}
+
+vm_console() {
+    local vm_name="$1"
+    if [ -z "$vm_name" ]; then
+        log_error "VM name required"
+        exit 1
+    fi
+    
+    local vm_dir="$VMS_DIR/$vm_name"
+    if [ ! -d "$vm_dir" ]; then
+        log_error "VM '$vm_name' not found"
+        exit 1
+    fi
+    
+    local pid_file="$vm_dir/vm.pid"
+    if [ ! -f "$pid_file" ] || ! kill -0 "$(cat "$pid_file")" 2>/dev/null; then
+        log_error "VM '$vm_name' is not running"
+        exit 1
+    fi
+    
+    local console_sock="$vm_dir/console.sock"
+    if [ ! -S "$console_sock" ]; then
+        log_error "Console socket not found for VM '$vm_name'"
+        exit 1
+    fi
+    
+    log_info "Connecting to console for VM '$vm_name'"
+    log_info "Press Ctrl+C to disconnect"
+    echo
+    
+    if ! command -v socat >/dev/null 2>&1; then
+        log_error "socat not found. Install with: brew install socat"
+        exit 1
+    fi
+    
+    socat - UNIX-CONNECT:"$console_sock"
+}
+
+
 # Image Commands
 image_list() {
     init_dirs
@@ -395,6 +602,97 @@ image_delete() {
     log_success "Image '$distro' deleted"
 }
 
+purge() {
+    init_dirs
+    
+    local vm_count=0
+    local image_count=0
+    local running_vms=0
+    
+    # Count VMs
+    if [ -d "$VMS_DIR" ] && [ "$(ls -A "$VMS_DIR" 2>/dev/null)" ]; then
+        vm_count=$(ls -1 "$VMS_DIR" | wc -l | tr -d ' ')
+        
+        # Count running VMs
+        for vm_dir in "$VMS_DIR"/*; do
+            if [ -d "$vm_dir" ]; then
+                local pid_file="$vm_dir/vm.pid"
+                if [ -f "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
+                    running_vms=$((running_vms + 1))
+                fi
+            fi
+        done
+    fi
+    
+    # Count images
+    if [ -d "$DISTROS_DIR" ] && [ "$(ls -A "$DISTROS_DIR" 2>/dev/null)" ]; then
+        image_count=$(ls -1 "$DISTROS_DIR" | wc -l | tr -d ' ')
+    fi
+    
+    if [ "$vm_count" -eq 0 ] && [ "$image_count" -eq 0 ]; then
+        log_info "No VMs or images found to purge"
+        return
+    fi
+    
+    echo
+    log_warning "PURGE ALL DATA"
+    echo "This will permanently delete:"
+    if [ "$vm_count" -gt 0 ]; then
+        echo "  • $vm_count VM(s) (including $running_vms running)"
+    fi
+    if [ "$image_count" -gt 0 ]; then
+        echo "  • $image_count distro image(s)"
+    fi
+    echo "  • All VM data and configurations"
+    echo
+    log_error "This action cannot be undone!"
+    echo
+    
+    printf "Type 'DELETE ALL' to confirm purge: "
+    read -r confirm
+    
+    if [ "$confirm" != "DELETE ALL" ]; then
+        log_info "Purge cancelled"
+        exit 0
+    fi
+    
+    echo
+    log_info "Purging all VMs and images..."
+    
+    # Stop and delete all VMs
+    if [ "$vm_count" -gt 0 ]; then
+        log_info "Stopping and deleting $vm_count VM(s)..."
+        for vm_dir in "$VMS_DIR"/*; do
+            if [ -d "$vm_dir" ]; then
+                local vm_name=$(basename "$vm_dir")
+                local pid_file="$vm_dir/vm.pid"
+                
+                # Stop VM if running
+                if [ -f "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
+                    local pid=$(cat "$pid_file")
+                    kill "$pid" 2>/dev/null
+                    log_info "  Stopped VM '$vm_name'"
+                fi
+                
+                # Delete VM directory
+                rm -rf "$vm_dir"
+                log_info "  Deleted VM '$vm_name'"
+            fi
+        done
+    fi
+    
+    # Delete all images
+    if [ "$image_count" -gt 0 ]; then
+        log_info "Deleting $image_count image(s)..."
+        rm -rf "$DISTROS_DIR"/*
+        log_info "  Deleted all distro images"
+    fi
+    
+    echo
+    log_success "Purge completed successfully"
+    log_info "All VMs and images have been removed"
+}
+
 # Internal functions
 ensure_distro() {
     local distro="$1"
@@ -415,18 +713,19 @@ ensure_distro() {
         return
     fi
     
-    show_spinner "Downloading $distro" 100 &
+    # Redirect spinner output to stderr to avoid interfering with return value
+    show_spinner "Downloading $distro" 100 >&2 &
     local spinner_pid=$!
     mkdir -p "$distro_dir"
     if curl -L -o "$distro_path" "$url" --silent; then
         kill $spinner_pid 2>/dev/null
-        printf "\r\033[K"
-        log_success "Downloaded $distro"
+        printf "\r\033[K" >&2
+        log_success "Downloaded $distro" >&2
         echo "$distro_path"
     else
         kill $spinner_pid 2>/dev/null
-        printf "\r\033[K"
-        log_error "Failed to download $distro"
+        printf "\r\033[K" >&2
+        log_error "Failed to download $distro" >&2
         rm -f "$distro_path"
         exit 1
     fi
@@ -456,6 +755,8 @@ network:
     enp0s1:
       dhcp4: true
       dhcp6: true
+      dhcp-identifier: mac
+      optional: true
 
 users:
   - name: $username
@@ -563,61 +864,59 @@ start_vm_internal() {
     local cloud_init_iso="$vm_dir/cloud-init.iso"
     local efi_vars="$vm_dir/efi-vars.fd"
     local log_file="$vm_dir/console.log"
-    local monitor_socket="$vm_dir/monitor.sock"
     local pid_file="$vm_dir/vm.pid"
     
-    local bridge_interface=$(route get default | grep interface | awk '{print $2}')
-    if [ -z "$bridge_interface" ]; then
-        bridge_interface="en0"
-    fi
-    
     > "$log_file"
-    rm -f "$monitor_socket"
     
-    # For subsequent starts, don't attach cloud-init ISO to avoid reinitialization
-    if [ -f "$vm_dir/.first_boot_complete" ]; then
-        # VM has been booted before, don't use cloud-init
-        nohup qemu-system-aarch64 \
-            -machine virt \
-            -cpu host \
-            -accel hvf \
-            -smp "$DEFAULT_CPUS" \
-            -m "$DEFAULT_MEMORY" \
-            -drive if=pflash,format=raw,file=/opt/homebrew/share/qemu/edk2-aarch64-code.fd,readonly=on \
-            -drive if=pflash,format=raw,file="$efi_vars" \
-            -drive file="$vm_disk",format=qcow2,if=virtio \
-            -netdev vmnet-bridged,id=net0,ifname="$bridge_interface" \
-            -device virtio-net,netdev=net0,mac="$vm_mac" \
-            -global PIIX4_PM.disable_s3=1 \
-            -monitor unix:"$monitor_socket",server,nowait \
-            -serial unix:"$vm_dir/console.sock",server,nowait \
-            -device virtio-serial \
-            -chardev socket,path="$vm_dir/qga.sock",server=on,wait=off,id=qga0 \
-            -device virtserialport,chardev=qga0,name=org.qemu.guest_agent.0 \
-            -nographic > "$log_file" 2>&1 &
+    # Get homebrew prefix dynamically
+    local brew_prefix
+    if command -v brew >/dev/null 2>&1; then
+        brew_prefix=$(brew --prefix)
     else
-        # First boot, use cloud-init and mark as complete
-        touch "$vm_dir/.first_boot_complete"
-        nohup qemu-system-aarch64 \
-            -machine virt \
-            -cpu host \
-            -accel hvf \
-            -smp "$DEFAULT_CPUS" \
-            -m "$DEFAULT_MEMORY" \
-            -drive if=pflash,format=raw,file=/opt/homebrew/share/qemu/edk2-aarch64-code.fd,readonly=on \
-            -drive if=pflash,format=raw,file="$efi_vars" \
-            -drive file="$vm_disk",format=qcow2,if=virtio \
-            -drive file="$cloud_init_iso",media=cdrom,if=virtio,readonly=on \
-            -netdev vmnet-bridged,id=net0,ifname="$bridge_interface" \
-            -device virtio-net,netdev=net0,mac="$vm_mac" \
-            -global PIIX4_PM.disable_s3=1 \
-            -monitor unix:"$monitor_socket",server,nowait \
-            -serial unix:"$vm_dir/console.sock",server,nowait \
-            -device virtio-serial \
-            -chardev socket,path="$vm_dir/qga.sock",server=on,wait=off,id=qga0 \
-            -device virtserialport,chardev=qga0,name=org.qemu.guest_agent.0 \
-            -nographic > "$log_file" 2>&1 &
+        brew_prefix="/opt/homebrew"
     fi
+    
+    local socket_vmnet_sock="$brew_prefix/var/run/socket_vmnet"
+    local socket_vmnet_client="$brew_prefix/opt/socket_vmnet/bin/socket_vmnet_client"
+    
+    # Verify socket_vmnet_client exists
+    if [ ! -x "$socket_vmnet_client" ]; then
+        log_error "socket_vmnet_client not found at $socket_vmnet_client"
+        log_info "Install with: brew install socket_vmnet"
+        exit 1
+    fi
+    
+    # Verify socket exists
+    if [ ! -S "$socket_vmnet_sock" ]; then
+        log_error "socket_vmnet socket not found at $socket_vmnet_sock"
+        log_info "Make sure socket_vmnet daemon is running: sudo brew services start socket_vmnet"
+        exit 1
+    fi
+    
+    # Build QEMU arguments for socket_vmnet_client
+    local qemu_args=(
+        -machine virt,highmem=on
+        -cpu host
+        -accel hvf
+        -smp "$DEFAULT_CPUS"
+        -m "$DEFAULT_MEMORY"
+        -drive "if=pflash,format=raw,file=$brew_prefix/share/qemu/edk2-aarch64-code.fd,readonly=on"
+        -drive "if=pflash,format=raw,file=$efi_vars"
+        -drive "file=$vm_disk,format=qcow2,if=virtio"
+        -netdev "socket,id=net0,fd=3"
+        -device "virtio-net-device,netdev=net0,mac=$vm_mac"
+        -serial "unix:$vm_dir/console.sock,server,nowait"
+        -nographic
+    )
+    
+    # Add cloud-init ISO only for first boot
+    if [ ! -f "$vm_dir/.first_boot_complete" ]; then
+        qemu_args+=(-drive "file=$cloud_init_iso,media=cdrom,if=virtio,readonly=on")
+        touch "$vm_dir/.first_boot_complete"
+    fi
+    
+    # Start QEMU with socket_vmnet_client wrapper
+    nohup "$socket_vmnet_client" "$socket_vmnet_sock" qemu-system-aarch64 "${qemu_args[@]}" > "$log_file" 2>&1 &
     
     local qemu_pid=$!
     echo $qemu_pid > "$pid_file"
@@ -684,27 +983,44 @@ show_help() {
     echo
     echo "Usage: v4m <command> [options]"
     echo
+    echo "Setup Commands:"
+    echo "  v4m_init                    Complete setup: dependencies + DHCP fixes (recommended)"
+    echo "  init                        Initialize socket_vmnet only (basic setup)"
+    echo
     echo "VM Commands:"
     echo "  vm create [--name NAME] [--distro DISTRO] [--user USER] [--pass PASS]"
-    echo "  vm list                     List all VMs"
-    echo "  vm start <name>             Start a VM"
+    echo "  vm list                     List all VMs with status and IPs"
+    echo "  vm start <name>             Start a VM (no sudo required after init)"
     echo "  vm stop <name>              Stop a VM"
     echo "  vm delete <name>            Delete a VM"
+    echo "  vm ip <name>                Get VM IP address"
+    echo "  vm console <name>           Connect to VM console (Ctrl+C to exit)"
     echo
     echo "Image Commands:"
     echo "  image list                  List available images"
     echo "  image pull <distro>         Download a distro image"
     echo "  image delete <distro>       Delete a distro image"
     echo
+    echo "Cleanup Commands:"
+    echo "  purge                       Delete ALL VMs and images (requires confirmation)"
+    echo
     echo "Available distros: debian12, ubuntu22, ubuntu24"
     echo
+    echo "DHCP Fix Explanation:"
+    echo "  v4m_init fixes macOS firewall blocking DHCP by:"
+    echo "  - Allowing bootpd (DHCP server) through firewall"
+    echo "  - Restarting macOS DHCP service"
+    echo "  - Configuring socket_vmnet properly"
+    echo "  This ensures VMs get IPv4 addresses automatically"
+    echo
     echo "Examples:"
-    echo "  sudo v4m vm create                    # Create VM with defaults"
-    echo "  sudo v4m vm create --name myvm        # Create VM with specific name"
-    echo "  v4m vm list                           # List all VMs"
-    echo "  sudo v4m vm start myvm                # Start a VM"
-    echo "  v4m vm stop myvm                      # Stop a VM"
-    echo "  v4m image pull ubuntu22               # Download Ubuntu 22.04 image"
+    echo "  v4m v4m_init                          # Complete setup (recommended first run)"
+    echo "  v4m vm create                         # Create VM with random name"
+    echo "  v4m vm create --name myvm             # Create VM with specific name"
+    echo "  v4m vm list                           # List all VMs with IPs"
+    echo "  v4m vm console myvm                   # Connect to VM console"
+    echo "  v4m purge                             # Delete everything (requires 'DELETE ALL')"
+    echo "  ssh user01@myvm.local                 # SSH to VM (after v4m_init)"
 }
 
 main() {
@@ -714,6 +1030,12 @@ main() {
     fi
     
     case "$1" in
+        "v4m_init")
+            v4m_init
+            ;;
+        "init")
+            socket_vmnet_init
+            ;;
         "vm")
             shift
             case "$1" in
@@ -722,6 +1044,8 @@ main() {
                 "start") shift; vm_start "$@" ;;
                 "stop") shift; vm_stop "$@" ;;
                 "delete") shift; vm_delete "$@" ;;
+                "ip") shift; vm_ip "$@" ;;
+                "console") shift; vm_console "$@" ;;
                 *) log_error "Unknown vm command: $1"; show_help; exit 1 ;;
             esac
             ;;
@@ -733,6 +1057,9 @@ main() {
                 "delete") shift; image_delete "$@" ;;
                 *) log_error "Unknown image command: $1"; show_help; exit 1 ;;
             esac
+            ;;
+        "purge")
+            purge
             ;;
         "-h"|"--help"|"help")
             show_help
